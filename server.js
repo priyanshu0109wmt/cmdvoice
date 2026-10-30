@@ -74,11 +74,6 @@ app.post('/api/text-to-intent', async (req, res) => {
     status: result.status
   };
 
-  broadcast({
-    type: 'INTENT_PARSED',
-    payload: responsePayload
-  });
-
   return res.json(responsePayload);
 });
 

@@ -28,6 +28,7 @@ document.addEventListener('DOMContentLoaded', () => {
   let analyser = null;
   let microphoneStream = null;
   let animationId = null;
+  let speechNetworkFailed = false;
 
   // Initialize WebSocket Connection (if local server running)
   function initWebSocket() {
@@ -105,15 +106,41 @@ document.addEventListener('DOMContentLoaded', () => {
   function parseClientNLU(userText) {
     const cleanText = userText.toLowerCase().trim();
 
-    if (cleanText.includes('safari') || cleanText.includes('chrome') || cleanText.includes('open') || cleanText.includes('launch')) {
-      const app = cleanText.replace(/(open|launch|start|the)/g, '').trim() || 'safari';
+    if (cleanText.startsWith('close') || cleanText.startsWith('quit') || cleanText.startsWith('exit') || cleanText.startsWith('kill') || cleanText.startsWith('stop')) {
+      const app = cleanText.replace(/^(?:close|quit|exit|kill|stop)\s+(?:the\s+)?(?:app\s+)?/i, '').trim() || 'notepad';
+      return {
+        text: userText,
+        intent: { name: 'CloseApp', confidence: 0.95 },
+        slots: { app: app },
+        speech: { text: `Start the local cmdVoice server to close ${app} on Windows.` },
+        actionLog: `Client-only mode cannot control desktop processes. Run "npm start" and try "${userText}" again.`,
+        status: 'warning'
+      };
+    }
+
+    const sites = ['bing', 'google', 'youtube', 'github', 'reddit', 'twitter', 'x', 'chatgpt', 'gmail', 'wikipedia', 'amazon', 'netflix'];
+    for (const site of sites) {
+      if (cleanText.includes(site) && (cleanText.includes('open') || cleanText.includes('go to') || cleanText.includes('visit') || cleanText.startsWith(site))) {
+        return {
+          text: userText,
+          intent: { name: 'OpenWebsite', confidence: 0.95 },
+          slots: { site: site },
+          speech: { text: `Opening ${site} in browser.` },
+          actionLog: `Navigating to https://www.${site}.com`,
+          status: 'success'
+        };
+      }
+    }
+
+    if (cleanText.includes('open') || cleanText.includes('launch') || cleanText.includes('start')) {
+      const app = cleanText.replace(/\b(open|launch|start|the)\b/g, '').trim() || 'notepad';
       return {
         text: userText,
         intent: { name: 'LaunchApp', confidence: 0.95 },
         slots: { app: app },
-        speech: { text: `Launching ${app} on desktop.` },
-        actionLog: `Opened application '${app}'`,
-        status: 'success'
+        speech: { text: `Start the local cmdVoice server to launch ${app} on Windows.` },
+        actionLog: `Client-only mode cannot open desktop apps. Run "npm start" and try "${userText}" again.`,
+        status: 'warning'
       };
     }
 
@@ -178,9 +205,23 @@ document.addEventListener('DOMContentLoaded', () => {
   // Load Sentences.ini
   async function loadSentencesIni() {
     const sampleIni = `[LaunchApp]
-apps = (safari | chrome | finder | terminal | calculator | notes | spotify | vlc)
+apps = (chrome | google chrome | edge | microsoft edge | firefox | mozilla firefox | brave | brave browser | browser | web browser | explorer | file explorer | files | notepad | calculator | calc | paint | terminal | windows terminal | cmd | command prompt | powershell | settings | control panel | task manager | taskmanager | spotify | vlc | vlc media player | vscode | vs code | visual studio code | word | microsoft word | excel | microsoft excel | powerpoint | microsoft powerpoint | outlook | microsoft outlook | teams | microsoft teams | camera | store | microsoft store)
 open [the] <apps>{app}
 launch [the] <apps>{app}
+start <apps>{app}
+
+[CloseApp]
+close [the] <apps>{app}
+quit [the] <apps>{app}
+exit [the] <apps>{app}
+kill [the] <apps>{app}
+stop [the] <apps>{app}
+
+[OpenWebsite]
+sites = (bing | google | youtube | github | reddit | twitter | x | chatgpt | gmail | wikipedia | amazon | netflix)
+open [the] (website | page | site) <sites>{site}
+open <sites>{site}
+go to <sites>{site}
 
 [SystemStatus]
 check system (status | info | health | stats)
@@ -265,7 +306,14 @@ search [for] (javascript | python | rhasspy | weather | news){query} [on web]`;
       };
 
       recognition.onerror = (event) => {
-        addLog('error', 'Speech recognition error: ' + event.error);
+        if (event.error === 'network') {
+          speechNetworkFailed = true;
+          addLog('error', 'Speech recognition network error. Chrome could not reach its speech service; typed commands will still open Windows apps through the local server.');
+        } else if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
+          addLog('error', 'Microphone permission was blocked. Allow microphone access for localhost and try again.');
+        } else {
+          addLog('error', 'Speech recognition error: ' + event.error);
+        }
         stopRecording();
       };
 
@@ -279,12 +327,19 @@ search [for] (javascript | python | rhasspy | weather | news){query} [on web]`;
   }
 
   function startRecording() {
+    if (speechNetworkFailed) {
+      micStatusTag.textContent = 'Speech Service Offline';
+      micStatusTag.className = 'badge';
+      addLog('error', 'Voice recognition is unavailable right now. Type the command below, for example: open notepad.');
+      return;
+    }
+
     if (!recognition) initSpeechRecognition();
     if (recognition && !isRecording) {
       try {
         recognition.start();
       } catch (e) {
-        console.error(e);
+        addLog('error', 'Could not start speech recognition: ' + e.message);
       }
     }
   }

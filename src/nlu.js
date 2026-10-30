@@ -35,8 +35,10 @@ class RhasspyNLU {
         continue;
       }
 
-      if (line.includes('=') && !line.includes('(')) {
-        const [varName, varVal] = line.split('=').map(s => s.trim());
+      const variableMatch = line.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+)$/);
+      if (variableMatch) {
+        const varName = variableMatch[1].trim();
+        const varVal = variableMatch[2].trim();
         const options = this.extractOptions(varVal);
         if (currentIntent) {
           currentIntent.vars[varName] = options;
@@ -102,7 +104,10 @@ class RhasspyNLU {
     for (const [vName, vOpts] of Object.entries(vars)) {
       const varTag = `<${vName}>`;
       if (patternStr.includes(varTag)) {
-        patternStr = patternStr.replace(new RegExp(varTag, 'g'), `(${vOpts.join('|')})`);
+        const options = [...vOpts]
+          .sort((a, b) => b.length - a.length)
+          .map(option => this.escapeRegex(option));
+        patternStr = patternStr.replace(new RegExp(varTag, 'g'), `(${options.join('|')})`);
       }
     }
 
@@ -188,13 +193,101 @@ class RhasspyNLU {
     return null;
   }
 
+  getKnownApps() {
+    const apps = new Set();
+    for (const intent of this.intents) {
+      if (intent.vars && intent.vars.apps) {
+        for (const app of intent.vars.apps) {
+          apps.add(app.toLowerCase());
+        }
+      }
+    }
+    apps.add('brave browser');
+    apps.add('brave');
+    apps.add('google chrome');
+    apps.add('chrome');
+    apps.add('microsoft edge');
+    apps.add('edge');
+    apps.add('browser');
+    apps.add('web browser');
+    apps.add('notepad');
+    apps.add('calculator');
+    apps.add('file explorer');
+    apps.add('vs code');
+    apps.add('vscode');
+    apps.add('visual studio code');
+    return Array.from(apps).sort((a, b) => b.length - a.length);
+  }
+
   fuzzyFallback(rawText, cleanText) {
-    if (cleanText.includes('safari') || cleanText.includes('chrome') || cleanText.includes('open') || cleanText.includes('launch')) {
-      const app = cleanText.split(' ').pop();
+    const knownApps = this.getKnownApps();
+    const hasLaunchTrigger = cleanText.includes('open') || cleanText.includes('launch') || cleanText.includes('start');
+    const hasCloseTrigger = cleanText.startsWith('close') || cleanText.startsWith('quit') || cleanText.startsWith('exit') || cleanText.startsWith('kill') || cleanText.startsWith('stop');
+
+    // 1. Check for CloseApp trigger
+    if (hasCloseTrigger) {
+      for (const app of knownApps) {
+        const escapedApp = this.escapeRegex(app);
+        const appRegex = new RegExp(`(?:^|\\s)${escapedApp}(?:\\s|$)`, 'i');
+        if (appRegex.test(cleanText)) {
+          return {
+            text: rawText,
+            intent: { name: 'CloseApp', confidence: 0.9 },
+            slots: { app: app },
+            tokens: cleanText.split(/\s+/)
+          };
+        }
+      }
+      const stripped = cleanText
+        .replace(/^(?:close|quit|exit|kill|stop)\s+(?:the\s+)?(?:app\s+)?/i, '')
+        .replace(/\s+app$/i, '')
+        .trim();
+      return {
+        text: rawText,
+        intent: { name: 'CloseApp', confidence: 0.75 },
+        slots: { app: stripped || 'notepad' },
+        tokens: cleanText.split(/\s+/)
+      };
+    }
+
+    // 2. Check for OpenWebsite
+    const knownSites = ['bing', 'google', 'youtube', 'github', 'reddit', 'twitter', 'x', 'chatgpt', 'gmail', 'wikipedia', 'amazon', 'netflix'];
+    for (const site of knownSites) {
+      const siteRegex = new RegExp(`(?:^|\\s)${site}(?:\\s|$)`, 'i');
+      if (siteRegex.test(cleanText) && (hasLaunchTrigger || cleanText.includes('go to') || cleanText.includes('visit') || cleanText.includes('site') || cleanText.includes('page') || cleanText.startsWith(site))) {
+        return {
+          text: rawText,
+          intent: { name: 'OpenWebsite', confidence: 0.9 },
+          slots: { site: site },
+          tokens: cleanText.split(/\s+/)
+        };
+      }
+    }
+
+    // 3. Check for LaunchApp
+    for (const app of knownApps) {
+      const escapedApp = this.escapeRegex(app);
+      const appRegex = new RegExp(`(?:^|\\s)${escapedApp}(?:\\s|$)`, 'i');
+      if (appRegex.test(cleanText)) {
+        return {
+          text: rawText,
+          intent: { name: 'LaunchApp', confidence: hasLaunchTrigger ? 0.9 : 0.75 },
+          slots: { app: app },
+          tokens: cleanText.split(/\s+/)
+        };
+      }
+    }
+
+    if (hasLaunchTrigger) {
+      const stripped = cleanText
+        .replace(/^(?:please\s+)?(?:open|launch|start)\s+(?:the\s+)?(?:app\s+)?/i, '')
+        .replace(/\s+app$/i, '')
+        .trim();
+      const app = stripped || 'notepad';
       return {
         text: rawText,
         intent: { name: 'LaunchApp', confidence: 0.7 },
-        slots: { app: app || 'safari' },
+        slots: { app: app },
         tokens: cleanText.split(/\s+/)
       };
     }
@@ -221,6 +314,10 @@ class RhasspyNLU {
       slots: {},
       tokens: cleanText.split(/\s+/)
     };
+  }
+
+  escapeRegex(value) {
+    return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   }
 }
 
